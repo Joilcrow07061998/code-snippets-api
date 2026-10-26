@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +28,7 @@ async def list_user_snippets(db: AsyncSession, owner_id: int) -> list[Snippet]:
     return list(result.all())
 
 
-async def get_shared_snippet(db: AsyncSession, share_id) -> Snippet | None:
+async def get_shared_snippet(db: AsyncSession, share_id: UUID) -> Snippet | None:
     return await db.scalar(select(Snippet).where(Snippet.share_id == share_id))
 
 

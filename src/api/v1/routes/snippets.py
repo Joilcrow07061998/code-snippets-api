@@ -2,7 +2,6 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.dependencies import get_current_user
@@ -10,6 +9,14 @@ from src.db.session import get_db
 from src.models.snippet import Snippet
 from src.models.user import User
 from src.schemas.snippet import SnippetCreate, SnippetRead, SnippetUpdate
+from src.services.snippets import (
+    create_snippet as create_snippet_service,
+    delete_snippet as delete_snippet_service,
+    get_owned_snippet,
+    get_shared_snippet as get_shared_snippet_service,
+    list_user_snippets,
+    update_snippet as update_snippet_service,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,10 +28,7 @@ async def create_snippet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Snippet:
-    snippet = Snippet(**payload.model_dump(), owner_id=current_user.id)
-    db.add(snippet)
-    await db.commit()
-    await db.refresh(snippet)
+    snippet = await create_snippet_service(db, current_user.id, payload)
     logger.info("Snippet %s created by user %s", snippet.share_id, current_user.id)
     return snippet
 
@@ -34,15 +38,15 @@ async def list_my_snippets(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[Snippet]:
-    result = await db.scalars(
-        select(Snippet).where(Snippet.owner_id == current_user.id).order_by(Snippet.created_at.desc())
-    )
-    return list(result.all())
+    return await list_user_snippets(db, current_user.id)
 
 
 @router.get("/shared/{share_id}", response_model=SnippetRead)
-async def get_shared_snippet(share_id: UUID, db: AsyncSession = Depends(get_db)) -> Snippet:
-    snippet = await db.scalar(select(Snippet).where(Snippet.share_id == share_id))
+async def get_shared_snippet(
+    share_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Snippet:
+    snippet = await get_shared_snippet_service(db, share_id)
     if snippet is None:
         raise HTTPException(status_code=404, detail="Snippet not found")
     return snippet
@@ -55,12 +59,10 @@ async def update_snippet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Snippet:
-    snippet = await _get_owned_snippet(db, snippet_id, current_user.id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        if value is not None:
-            setattr(snippet, field, value)
-    await db.commit()
-    await db.refresh(snippet)
+    snippet = await get_owned_snippet(db, snippet_id, current_user.id)
+    if snippet is None:
+        raise HTTPException(status_code=404, detail="Snippet not found")
+    snippet = await update_snippet_service(db, snippet, payload)
     logger.info("Snippet %s updated by user %s", snippet.id, current_user.id)
     return snippet
 
@@ -71,17 +73,8 @@ async def delete_snippet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    snippet = await _get_owned_snippet(db, snippet_id, current_user.id)
-    await db.delete(snippet)
-    await db.commit()
-    logger.info("Snippet %s deleted by user %s", snippet_id, current_user.id)
-
-
-async def _get_owned_snippet(db: AsyncSession, snippet_id: int, user_id: int) -> Snippet:
-    snippet = await db.scalar(
-        select(Snippet).where(Snippet.id == snippet_id, Snippet.owner_id == user_id)
-    )
+    snippet = await get_owned_snippet(db, snippet_id, current_user.id)
     if snippet is None:
-        # чужой сниппет не раскрываем, как и несуществующий
         raise HTTPException(status_code=404, detail="Snippet not found")
-    return snippet
+    await delete_snippet_service(db, snippet)
+    logger.info("Snippet %s deleted by user %s", snippet_id, current_user.id)
